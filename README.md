@@ -218,6 +218,87 @@ https://your-domain.example.com/mcp
 5. 외부 도메인을 연결합니다.
 6. `/healthz`와 `/mcp`가 열리는지 확인합니다.
 
+## Render 무료 배포
+
+무료 배포는 `Blueprint` 가 아니라 `Web Service` 를 수동으로 생성하면 됩니다.
+
+### 배포 전에 준비할 것
+
+- GitHub 저장소에 현재 프로젝트 push
+- Render 계정
+- `KCSC_API_KEY`
+
+### 이 저장소에서 Render가 사용할 값
+
+- Python 버전: [.python-version](/c:/Users/user/PycharmProjects/kdh-standard-mcp/.python-version:1) 기준 `3.11`
+- 빌드 명령: `pip install .`
+- 시작 명령: `kcsc-standard-mcp`
+- 헬스체크 경로: `/healthz`
+- MCP 경로: `/mcp`
+
+### Render 무료 웹서비스 생성 순서
+
+1. Render 대시보드에서 `New +` 를 클릭합니다.
+2. `Web Service` 를 선택합니다.
+3. GitHub 저장소를 연결합니다.
+4. 서비스 생성 화면에서 아래처럼 입력합니다.
+
+- Name: `kcsc-standard-mcp`
+- Runtime: `Python 3`
+- Branch: 배포할 브랜치 (`main` 권장)
+- Region: 가까운 리전 선택
+- Instance Type: `Free`
+- Build Command: `pip install .`
+- Start Command: `kcsc-standard-mcp`
+
+5. `Environment Variables` 에 아래 값을 추가합니다.
+
+- `KCSC_API_KEY` = 실제 KCSC API 키
+- `MCP_SERVER_PATH` = `/mcp`
+
+6. `Create Web Service` 를 눌러 배포합니다.
+
+### 배포 후 확인할 주소
+
+Render가 기본 도메인을 발급합니다. 예:
+
+```text
+https://kcsc-standard-mcp.onrender.com
+```
+
+배포 후 아래 두 주소를 확인합니다.
+
+```text
+https://kcsc-standard-mcp.onrender.com/healthz
+https://kcsc-standard-mcp.onrender.com/mcp
+```
+
+- `/healthz`: 브라우저에서 열어 정상 JSON 응답 확인
+- `/mcp`: Claude.ai 커넥터에 넣을 실제 MCP 주소
+
+### Claude.ai에 넣는 값
+
+- 이름: `kcsc-standard-mcp`
+- 원격 MCP 서버 URL: `https://kcsc-standard-mcp.onrender.com/mcp`
+
+### 커스텀 도메인은 필수인가
+
+필수는 아닙니다. Render 기본 도메인으로 먼저 써도 됩니다.
+
+```text
+https://kcsc-standard-mcp.onrender.com/mcp
+```
+
+나중에 원하면 Render 설정에서 커스텀 도메인을 연결해서 아래처럼 바꿀 수 있습니다.
+
+```text
+https://mcp.your-domain.com/mcp
+```
+
+### 참고
+
+[render.yaml](/c:/Users/user/PycharmProjects/kdh-standard-mcp/render.yaml:1) 은 Blueprint용 예시 파일입니다. 무료 수동 배포에서는 없어도 되고, 위 값만 직접 입력하면 됩니다.
+
 ## 연결 방법
 
 ### Claude.ai 커스텀 커넥터

@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: kcsc-standard-mcp
+    runtime: python
+    plan: starter
+    autoDeploy: true
+    healthCheckPath: /healthz
+    buildCommand: pip install .
+    startCommand: kcsc-standard-mcp
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.11
+      - key: MCP_SERVER_PATH
+        value: /mcp
+      - key: KCSC_API_KEY
+        sync: false
