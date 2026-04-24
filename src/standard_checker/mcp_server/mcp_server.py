@@ -11,16 +11,14 @@ from __future__ import annotations
 import json
 import os
 import re
-import socket
-import subprocess
 import sys
-import time
-import urllib.request
-import webbrowser
 from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
+from starlette.applications import Starlette
+from starlette.responses import JSONResponse
+from starlette.routing import Route
 
 
 APP_DIR = Path(__file__).resolve().parents[3]
@@ -32,7 +30,7 @@ load_dotenv(APP_DIR / ".env")
 
 try:
     from mcp.server import Server
-    from mcp.server.stdio import stdio_server
+    from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
     from mcp import types
 except ImportError:
     print("mcp package is required: pip install mcp", file=sys.stderr)
@@ -48,12 +46,10 @@ from standard_checker.prompts import (
     SYSTEM_PROMPT_EXTRACTOR,
 )
 
+HTTP_HOST = os.getenv("HOST", os.getenv("MCP_SERVER_HOST", "0.0.0.0"))
+HTTP_PORT = int(os.getenv("PORT", os.getenv("MCP_SERVER_PORT", "8000")))
+HTTP_PATH = os.getenv("MCP_SERVER_PATH", "/mcp")
 
-DASH_PORT = int(os.getenv("MCP_DASH_PORT", "8060"))
-DASH_HOST = os.getenv("MCP_DASH_HOST", "127.0.0.1")
-PYTHON = sys.executable
-
-_dash_process: subprocess.Popen | None = None
 _kcsc: KCSCClient | None = None
 
 SERVER_INSTRUCTIONS = """
@@ -104,7 +100,146 @@ For each sheet:
 Use this judgment set exactly: "적합", "부적합", "검토필요".
 """.strip()
 
+CLAUDE_REPORT_TASK = """
+You are writing a detailed Korean structural review report from a StandardChecker MCP package.
+Use the package as the primary evidence source and produce a report that can be used as a draft deliverable.
+
+Core rules:
+1. Write in Korean.
+2. Use a formal technical report tone.
+3. Prefer Markdown headings and tables.
+4. Separate compliant items, noncompliant items, and uncertain items.
+5. For every important conclusion, include evidence whenever available:
+   - source sheet/page
+   - source row/cell
+   - standard code and clause
+   - numeric comparison
+6. Do not invent missing data. If the evidence is incomplete, mark the item as "검토필요".
+7. If the source package contains conflicting values, treat that as a finding.
+
+Required report sections:
+1. Title
+2. Review metadata
+3. Structural overview
+4. Applied code review
+5. Material review
+6. Load review
+7. Member design review
+8. Serviceability review
+9. Connection / baseplate / anchor review
+10. Foundation review
+11. Summary of compliant items
+12. Summary of correction-required items
+13. Follow-up actions
+
+Severity rules:
+- 높음: governing-code mismatch, missing basis, unsafe assumption, direct contradiction
+- 중간: inconsistent notation, partial traceability, unexplained assumption
+- 낮음: editorial cleanup, terminology cleanup, reference cleanup
+
+Judgment rules:
+- 적합: evidence supports compliance
+- 부적합: evidence shows noncompliance or contradiction
+- 검토필요: evidence is incomplete, conflicting, or not traceable enough
+
+Write the report so that a reviewer can reuse it directly with minimal editing.
+""".strip()
+
+REPORT_TEMPLATE_MARKDOWN = """
+# [프로젝트명]
+## 구조계산서 KCSC 건설기준 검토 보고서
+
+> **원본 파일:** [파일명]
+> **검토일자:** [작성일]
+> **검토목적:** KCSC/KDS/KCS 기준 적합성 검토 및 오류·미비사항 도출
+
+---
+
+## 1. 구조물 개요
+
+| 항목 | 내용 | 근거 |
+|------|------|------|
+| 공사명 |  |  |
+| 위치 |  |  |
+| 용도 |  |  |
+| 구조형식 |  |  |
+| 기초형식 |  |  |
+| 설계방법 |  |  |
+| 해석 프로그램 |  |  |
+
+## 2. 적용 기준 검토
+
+| 코드번호 | 기준명 | 계산서 근거 | 적용 판단 | 비고 |
+|----------|--------|------------|----------|------|
+
+## 3. 사용재료 기준 검토
+
+| 항목 | 계산서 내용 | 근거 | 적용 기준 | 검토 결과 |
+|------|-----------|------|---------|---------|
+
+## 4. 하중조건 검토
+
+| 항목 | 계산서 내용 | 근거 | 적용 기준 | 검토 결과 |
+|------|-----------|------|---------|---------|
+
+## 5. 하중조합 검토
+
+| 항목 | 계산서 내용 | 근거 | 적용 기준 | 검토 결과 |
+|------|-----------|------|---------|---------|
+
+## 6. 구조 부재 설계 검토
+
+| 부재 | 검토 항목 | 계산값 | 기준값 | 판정 | 근거 |
+|------|----------|-------|-------|------|------|
+
+## 7. 처짐 및 사용성 검토
+
+| 항목 | 계산값 | 허용값 | 판정 | 근거 |
+|------|-------|-------|------|------|
+
+## 8. 접합부 / 베이스플레이트 / 앵커 검토
+
+| 항목 | 계산값 | 기준값 | 판정 | 근거 |
+|------|-------|-------|------|------|
+
+## 9. 기초 및 지반 검토
+
+| 항목 | 계산서 내용 | 근거 | 적용 기준 | 검토 결과 |
+|------|-----------|------|---------|---------|
+
+## 10. 종합 검토의견
+
+### 10-1. 적합 사항
+
+| 번호 | 항목 | 근거 |
+|------|------|------|
+
+### 10-2. 수정·보완 필요 사항
+
+| 번호 | 중요도 | 위치 | 항목 | 문제 내용 | 권고 조치 | 관련 기준 |
+|------|--------|------|------|---------|---------|---------|
+
+## 11. 후속 조치 제안
+
+1. [조치 1]
+2. [조치 2]
+3. [조치 3]
+
+## 12. 참조 기준 목록
+
+| 코드번호 | 기준명 | 비고 |
+|----------|--------|------|
+""".strip()
+
 server = Server("standardchecker", version="3.0.0", instructions=SERVER_INSTRUCTIONS)
+
+
+class RemoteMCPASGIApp:
+    def __init__(self, session_manager: StreamableHTTPSessionManager):
+        self.session_manager = session_manager
+
+    async def __call__(self, scope, receive, send) -> None:
+        await self.session_manager.handle_request(scope, receive, send)
 
 
 def _json_text(data: Any) -> list[types.TextContent]:
@@ -116,62 +251,6 @@ def _kcsc_client() -> KCSCClient:
     if _kcsc is None:
         _kcsc = KCSCClient()
     return _kcsc
-
-
-def _is_port_open(host: str, port: int) -> bool:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.settimeout(0.5)
-        return s.connect_ex((host, port)) == 0
-
-
-def _start_dash() -> str:
-    global _dash_process
-    url = f"http://{DASH_HOST}:{DASH_PORT}"
-    if _is_port_open(DASH_HOST, DASH_PORT):
-        return url
-
-    env = os.environ.copy()
-    env.setdefault("PORT", str(DASH_PORT))
-    _dash_process = subprocess.Popen(
-        [PYTHON, str(APP_DIR / "app.py")],
-        cwd=str(APP_DIR),
-        env=env,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    return url
-
-
-def _wait_for_dash(timeout: int = 20) -> bool:
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        if _is_port_open(DASH_HOST, DASH_PORT):
-            return True
-        time.sleep(0.5)
-    return False
-
-
-def _push_to_dashboard(payload: dict) -> dict:
-    url = f"http://{DASH_HOST}:{DASH_PORT}/mcp/push-result"
-    body = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=body,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        return json.loads(resp.read())
-
-
-def _stop_dash() -> bool:
-    global _dash_process
-    if _dash_process and _dash_process.poll() is None:
-        _dash_process.terminate()
-        _dash_process = None
-        return True
-    return False
-
 
 def _parse_file(file_path: str) -> list[dict]:
     path = Path(file_path).expanduser()
@@ -345,6 +424,79 @@ def _format_detail(detail: dict, max_chars: int) -> dict:
     }
 
 
+def _sheet_progress_summary(sheet: dict, recommended_codes: list[dict], standards: list[dict]) -> dict:
+    formula_cells = sheet.get("formula_cells", []) or []
+    missing_formula_results = sheet.get("missing_formula_results", []) or []
+    preview = _section_text(sheet, max_chars=220)
+    top_codes = []
+    for code in recommended_codes[:3]:
+        if code.get("codeNo"):
+            top_codes.append(_code_label(code))
+
+    status = "ready_for_review"
+    if missing_formula_results:
+        status = "review_attention_needed"
+    elif not top_codes:
+        status = "needs_manual_standard_selection"
+
+    return {
+        "status": status,
+        "preview": preview,
+        "formula_cell_count": len(formula_cells),
+        "missing_formula_result_count": len(missing_formula_results),
+        "recommended_code_count": len([code for code in recommended_codes if code.get("codeNo")]),
+        "standard_detail_count": len([item for item in standards if item.get("text")]),
+        "top_recommended_codes": top_codes,
+        "next_actions": [
+            "Extract key design inputs and calculation results from numbered_rows_text.",
+            "Review missing_formula_results first if any are present.",
+            "Compare the extracted checkpoints against standard_details.",
+        ],
+    }
+
+
+def _build_progress_overview(file_label: str, review_inputs: list[dict]) -> dict:
+    attention_sheets = [
+        item["sheet"]
+        for item in review_inputs
+        if (item.get("progress") or {}).get("missing_formula_result_count", 0) > 0
+    ]
+    total_missing = sum((item.get("progress") or {}).get("missing_formula_result_count", 0) for item in review_inputs)
+    total_codes = sum((item.get("progress") or {}).get("recommended_code_count", 0) for item in review_inputs)
+
+    return {
+        "file": file_label,
+        "status": "package_ready",
+        "step_sequence": [
+            "1. Inspect per-sheet progress summaries.",
+            "2. Review sheets with missing formula results first.",
+            "3. Use numbered_rows_text and standard_details to produce findings.",
+        ],
+        "attention_sheet_count": len(attention_sheets),
+        "attention_sheets": attention_sheets,
+        "total_missing_formula_results": total_missing,
+        "total_recommended_codes": total_codes,
+        "next_prompt_hint": "Summarize the highest-risk sheets first, then produce findings with row/cell evidence and KDS/KCS clauses.",
+    }
+
+
+def _parse_summary(file_label: str, sheets: list[dict]) -> dict:
+    total_missing = sum(len(sheet.get("missing_formula_results", []) or []) for sheet in sheets)
+    total_formulas = sum(len(sheet.get("formula_cells", []) or []) for sheet in sheets)
+    return {
+        "file": file_label,
+        "status": "parsed",
+        "sheet_count": len(sheets),
+        "total_formula_cells": total_formulas,
+        "total_missing_formula_results": total_missing,
+        "next_actions": [
+            "Inspect the sheet previews and choose the sheets to review.",
+            "Call review_excel_by_sheet for the key structural sheets.",
+            "Prioritize sheets with missing formula results.",
+        ],
+    }
+
+
 def _standard_details(codes: list[dict], per_code_chars: int) -> list[dict]:
     details = []
     for code in codes:
@@ -383,6 +535,7 @@ def _build_review_package(
         source_text = _section_text(sheet, max_chars=4000)
         recommended_codes = _recommend_codes_locally(numbered_text or source_text, limit=max_codes)
         standards = _standard_details(recommended_codes, per_code_chars) if include_standard_details else []
+        progress = _sheet_progress_summary(sheet, recommended_codes, standards)
         review_inputs.append({
             "sheet": sheet_name,
             "source_text": source_text,
@@ -391,6 +544,7 @@ def _build_review_package(
             "missing_formula_results": sheet.get("missing_formula_results", []),
             "recommended_codes": recommended_codes,
             "standard_details": standards,
+            "progress": progress,
         })
 
     return {
@@ -398,7 +552,10 @@ def _build_review_package(
         "external_llm_called": False,
         "file": file_label,
         "sheet_count": len(review_inputs),
+        "progress_overview": _build_progress_overview(file_label, review_inputs),
         "claude_review_task": CLAUDE_REVIEW_TASK,
+        "claude_report_task": CLAUDE_REPORT_TASK,
+        "report_template_markdown": REPORT_TEMPLATE_MARKDOWN,
         "output_schema": {
             "sheets": [
                 {
@@ -449,6 +606,17 @@ async def list_prompts() -> list[types.Prompt]:
             name="standardchecker_review_principles",
             description="Review principles and internal prompt references",
         ),
+        types.Prompt(
+            name="standardchecker_detailed_report",
+            description="Detailed Korean report-writing prompt for structural calculation review",
+            arguments=[
+                types.PromptArgument(
+                    name="file_path",
+                    description="Excel/PDF file path to review",
+                    required=False,
+                )
+            ],
+        ),
     ]
 
 
@@ -474,11 +642,33 @@ async def get_prompt(name: str, arguments: dict[str, str] | None) -> types.GetPr
             WORKFLOW_GUIDE
             + "\n\n# Host-model review task\n"
             + CLAUDE_REVIEW_TASK
+            + "\n\n# Detailed report task\n"
+            + CLAUDE_REPORT_TASK
             + "\n\n# Reference prompts used by the app workflow\n"
             + json.dumps(REVIEW_SYSTEM_PROMPTS, ensure_ascii=False, indent=2)
         )
         return types.GetPromptResult(
             description="StandardChecker review principles",
+            messages=[
+                types.PromptMessage(
+                    role="user",
+                    content=types.TextContent(type="text", text=text),
+                )
+            ],
+        )
+    if name == "standardchecker_detailed_report":
+        text = "# StandardChecker detailed report prompt\n\n" + CLAUDE_REPORT_TASK
+        file_hint = arguments.get("file_path", "").strip()
+        if file_hint:
+            text += f"\n\nTarget file: {file_hint}"
+        text += "\n\n# Report template\n" + REPORT_TEMPLATE_MARKDOWN
+        text += (
+            "\n\n# Writing note\n"
+            "Use progress_overview, each sheet's progress, recommended_codes, standard_details, "
+            "and row/cell evidence to produce the report."
+        )
+        return types.GetPromptResult(
+            description="Detailed Korean structural review report prompt",
             messages=[
                 types.PromptMessage(
                     role="user",
@@ -504,6 +694,12 @@ async def list_resources() -> list[types.Resource]:
             description="Prompt references for extraction, audit, cross-audit, and deep review",
             mimeType="application/json",
         ),
+        types.Resource(
+            uri="standardchecker://report-template",
+            name="StandardChecker report template",
+            description="Detailed Korean report-writing prompt and template",
+            mimeType="text/markdown",
+        ),
     ]
 
 
@@ -514,6 +710,8 @@ async def read_resource(uri) -> str:
         return WORKFLOW_GUIDE
     if uri_text == "standardchecker://system-prompts":
         return json.dumps(REVIEW_SYSTEM_PROMPTS, ensure_ascii=False, indent=2)
+    if uri_text == "standardchecker://report-template":
+        return CLAUDE_REPORT_TASK + "\n\n" + REPORT_TEMPLATE_MARKDOWN
     raise ValueError(f"Unknown resource: {uri_text}")
 
 
@@ -595,40 +793,6 @@ async def list_tools() -> list[types.Tool]:
             },
         ),
         types.Tool(
-            name="analyze_and_push",
-            description=(
-                "Open the Dash UI and build a Claude review package. "
-                "No final analysis is pushed because Claude, not the MCP server, performs the reasoning."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "file_path": {"type": "string", "description": "Path to Excel/PDF file"},
-                    "sheet_names": sheet_names_property,
-                    "max_codes": max_codes_property,
-                    "include_standard_details": include_standard_details_property,
-                    "open_browser": {"type": "boolean", "description": "Open browser", "default": True},
-                },
-                "required": ["file_path"],
-            },
-        ),
-        types.Tool(
-            name="open_dashboard",
-            description="Start the Dash UI and return its URL.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "open_browser": {"type": "boolean", "description": "Open browser", "default": True},
-                },
-                "required": [],
-            },
-        ),
-        types.Tool(
-            name="close_dashboard",
-            description="Stop the Dash UI process started by this MCP server.",
-            inputSchema={"type": "object", "properties": {}, "required": []},
-        ),
-        types.Tool(
             name="kcsc_get_code_list",
             description="Return KCSC code list. No LLM is called.",
             inputSchema={"type": "object", "properties": {}, "required": []},
@@ -652,21 +816,12 @@ async def list_tools() -> list[types.Tool]:
 async def call_tool(name: str, arguments: dict | None) -> list[types.TextContent]:
     arguments = arguments or {}
 
-    if name == "open_dashboard":
-        url = _start_dash()
-        if arguments.get("open_browser", True):
-            webbrowser.open(url)
-        return _json_text({"ok": True, "url": url})
-
-    if name == "close_dashboard":
-        stopped = _stop_dash()
-        return _json_text({"ok": stopped})
-
     if name == "parse_excel_sheets":
         sheets = _parse_file(arguments["file_path"])
         return _json_text({
             "external_llm_called": False,
             "file": Path(arguments["file_path"]).name,
+            "progress_overview": _parse_summary(Path(arguments["file_path"]).name, sheets),
             "sheet_count": len(sheets),
             "sheets": [
                 {
@@ -705,30 +860,6 @@ async def call_tool(name: str, arguments: dict | None) -> list[types.TextContent
         )
         return _json_text(package)
 
-    if name == "analyze_and_push":
-        dashboard_url = _start_dash()
-        if not _wait_for_dash(timeout=20):
-            return _json_text({
-                "ok": False,
-                "external_llm_called": False,
-                "error": "Dash did not respond within 20 seconds.",
-                "dashboard_url": dashboard_url,
-            })
-        if arguments.get("open_browser", True):
-            webbrowser.open(dashboard_url)
-
-        file_path = arguments["file_path"]
-        sheets = _filter_sheets(_parse_file(file_path), arguments.get("sheet_names"))
-        package = _build_review_package(
-            file_label=Path(file_path).name,
-            sheets=sheets,
-            max_codes=int(arguments.get("max_codes", 6)),
-            include_standard_details=arguments.get("include_standard_details", True),
-        )
-        package["dashboard_url"] = dashboard_url
-        package["note"] = "Claude should perform the review in chat; no external LLM or final dashboard result was generated."
-        return _json_text(package)
-
     if name == "kcsc_get_code_list":
         return _json_text({"external_llm_called": False, "codes": _kcsc_client().get_code_list()})
 
@@ -739,15 +870,47 @@ async def call_tool(name: str, arguments: dict | None) -> list[types.TextContent
     raise ValueError(f"Unknown tool: {name}")
 
 
-async def main() -> None:
-    async with stdio_server() as (read_stream, write_stream):
-        await server.run(read_stream, write_stream, server.create_initialization_options())
+def create_app() -> Starlette:
+    session_manager = StreamableHTTPSessionManager(app=server)
+    mcp_app = RemoteMCPASGIApp(session_manager)
+
+    async def index(_) -> JSONResponse:
+        return JSONResponse(
+            {
+                "name": "KCSC Standard MCP",
+                "transport": "streamable_http",
+                "mcp_path": HTTP_PATH,
+                "health_path": "/healthz",
+            }
+        )
+
+    async def health(_) -> JSONResponse:
+        return JSONResponse(
+            {
+                "ok": True,
+                "name": "KCSC Standard MCP",
+                "transport": "streamable_http",
+            }
+        )
+
+    return Starlette(
+        routes=[
+            Route("/", endpoint=index, methods=["GET"]),
+            Route("/healthz", endpoint=health, methods=["GET"]),
+            Route(HTTP_PATH, endpoint=mcp_app, methods=["GET", "POST", "DELETE"]),
+        ],
+        lifespan=lambda _: session_manager.run(),
+    )
+
+
+def serve() -> None:
+    import uvicorn
+
+    uvicorn.run(create_app(), host=HTTP_HOST, port=HTTP_PORT)
 
 
 def cli() -> None:
-    import asyncio
-
-    asyncio.run(main())
+    serve()
 
 
 if __name__ == "__main__":

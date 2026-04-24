@@ -1,10 +1,7 @@
 {
   "mcpServers": {
     "kcsc-standard-mcp": {
-      "command": "kcsc-standard-mcp",
-      "env": {
-        "KCSC_API_KEY": "YOUR_KCSC_API_KEY"
-      }
+      "url": "https://your-domain.example.com/mcp"
     }
   }
 }

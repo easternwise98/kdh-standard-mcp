@@ -17,6 +17,8 @@ dependencies = [
   "requests",
   "openpyxl",
   "pdfplumber",
+  "starlette",
+  "uvicorn",
 ]
 
 [project.scripts]
