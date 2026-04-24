@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "kcsc-standard-mcp": {
-      "url": "https://your-domain.example.com/mcp"
+      "url": "https://your-domain.example.com/mcp?oc=YOUR_KCSC_API_KEY"
     }
   }
 }

@@ -50,7 +50,8 @@ HTTP_HOST = os.getenv("HOST", os.getenv("MCP_SERVER_HOST", "0.0.0.0"))
 HTTP_PORT = int(os.getenv("PORT", os.getenv("MCP_SERVER_PORT", "8000")))
 HTTP_PATH = os.getenv("MCP_SERVER_PATH", "/mcp")
 
-_kcsc: KCSCClient | None = None
+_kcsc_clients: dict[str, KCSCClient] = {}
+_session_api_keys: dict[str, str] = {}
 
 SERVER_INSTRUCTIONS = """
 StandardChecker exposes local tools for reviewing Korean construction calculation
@@ -68,11 +69,13 @@ Use this server as a context provider. The MCP tools parse files and fetch KCSC
 standard text; Claude performs the reasoning.
 
 Recommended order:
-1. `parse_excel_sheets` if you need to inspect sheet names first.
-2. `review_excel_by_sheet` to build a review package for one or more sheets.
-3. Use the returned `claude_review_task` and `review_inputs` to extract checkpoints,
+1. `get_kcsc_api_key_status` to check whether the session is already configured.
+2. `set_kcsc_api_key` once per session if the server is not already configured with a shared KCSC API key.
+3. `parse_excel_sheets` if you need to inspect sheet names first.
+4. `review_excel_by_sheet` to build a review package for one or more sheets.
+5. Use the returned `claude_review_task` and `review_inputs` to extract checkpoints,
    audit internal consistency, compare against KCSC clauses, and produce judgments.
-4. Use `kcsc_get_code_detail` for additional standard text if the package is not enough.
+6. Use `kcsc_get_code_detail` for additional standard text if the package is not enough.
 
 Judgment rules:
 - Prefer exact source rows, KDS/KCS clauses, numeric comparisons, and explicit uncertainty.
@@ -246,11 +249,115 @@ def _json_text(data: Any) -> list[types.TextContent]:
     return [types.TextContent(type="text", text=json.dumps(data, ensure_ascii=False, indent=2))]
 
 
-def _kcsc_client() -> KCSCClient:
-    global _kcsc
-    if _kcsc is None:
-        _kcsc = KCSCClient()
-    return _kcsc
+def _request_headers() -> dict[str, str]:
+    try:
+        request = server.request_context.request
+    except LookupError:
+        return {}
+    if request is None:
+        return {}
+    return {str(k).lower(): str(v) for k, v in request.headers.items()}
+
+
+def _request_query_params() -> dict[str, str]:
+    try:
+        request = server.request_context.request
+    except LookupError:
+        return {}
+    if request is None:
+        return {}
+    return {str(k): str(v) for k, v in request.query_params.items()}
+
+
+def _current_session_id() -> str | None:
+    headers = _request_headers()
+    return headers.get("mcp-session-id")
+
+
+def _mask_api_key(api_key: str) -> str:
+    if len(api_key) <= 6:
+        return "*" * len(api_key)
+    return f"{api_key[:3]}{'*' * (len(api_key) - 6)}{api_key[-3:]}"
+
+
+def _kcsc_auth_status() -> dict:
+    headers = _request_headers()
+    query = _request_query_params()
+    session_id = _current_session_id()
+    session_key = _session_api_keys.get(session_id or "", "")
+    query_key = (query.get("oc") or query.get("api_key") or "").strip()
+    header_key = (headers.get("x-kcsc-api-key") or headers.get("kcsc-api-key") or "").strip()
+    env_key = os.getenv("KCSC_API_KEY", "").strip()
+
+    active_source = "missing"
+    active_masked = None
+    if query_key:
+        active_source = "query_param"
+        active_masked = _mask_api_key(query_key)
+    elif header_key:
+        active_source = "request_header"
+        active_masked = _mask_api_key(header_key)
+    elif session_key:
+        active_source = "session"
+        active_masked = _mask_api_key(session_key)
+    elif env_key:
+        active_source = "server_env"
+        active_masked = _mask_api_key(env_key)
+
+    return {
+        "configured": active_source != "missing",
+        "active_source": active_source,
+        "session_id": session_id,
+        "has_query_param_key": bool(query_key),
+        "has_request_header_key": bool(header_key),
+        "has_session_key": bool(session_key),
+        "has_server_env_key": bool(env_key),
+        "active_key_masked": active_masked,
+        "setup_steps": [
+            "1. Call set_kcsc_api_key once if no key is configured.",
+            "2. Verify status with get_kcsc_api_key_status.",
+            "3. Run review_excel_by_sheet or kcsc_get_code_detail.",
+        ],
+    }
+
+
+def _resolve_kcsc_api_key(arguments: dict | None = None) -> str:
+    arguments = arguments or {}
+    explicit = str(arguments.get("api_key", "") or "").strip()
+    if explicit:
+        return explicit
+
+    query = _request_query_params()
+    query_key = (query.get("oc") or query.get("api_key") or "").strip()
+    if query_key:
+        return query_key
+
+    headers = _request_headers()
+    header_key = (headers.get("x-kcsc-api-key") or headers.get("kcsc-api-key") or "").strip()
+    if header_key:
+        return header_key
+
+    session_id = _current_session_id()
+    if session_id and session_id in _session_api_keys:
+        return _session_api_keys[session_id]
+
+    env_key = os.getenv("KCSC_API_KEY", "").strip()
+    if env_key:
+        return env_key
+
+    raise ValueError(
+        "KCSC API key is required. Call set_kcsc_api_key once, pass api_key in the tool input, "
+        "add ?oc=YOUR_KEY to the MCP URL, send X-KCSC-API-Key header, or configure KCSC_API_KEY on the server."
+    )
+
+
+def _kcsc_client(api_key: str | None = None) -> KCSCClient:
+    resolved_key = (api_key or "").strip() or _resolve_kcsc_api_key()
+    client = _kcsc_clients.get(resolved_key)
+    if client is None:
+        client = KCSCClient(api_key=resolved_key)
+        _kcsc_clients[resolved_key] = client
+    return client
 
 def _parse_file(file_path: str) -> list[dict]:
     path = Path(file_path).expanduser()
@@ -376,9 +483,9 @@ def _score_code(code: dict, keywords: list[str]) -> int:
     return score
 
 
-def _recommend_codes_locally(text: str, limit: int = 8) -> list[dict]:
+def _recommend_codes_locally(text: str, limit: int = 8, api_key: str | None = None) -> list[dict]:
     try:
-        code_list = _kcsc_client().get_code_list()
+        code_list = _kcsc_client(api_key).get_code_list()
     except Exception as exc:
         return [{
             "error": f"KCSC code list unavailable: {type(exc).__name__}: {exc}",
@@ -497,7 +604,7 @@ def _parse_summary(file_label: str, sheets: list[dict]) -> dict:
     }
 
 
-def _standard_details(codes: list[dict], per_code_chars: int) -> list[dict]:
+def _standard_details(codes: list[dict], per_code_chars: int, api_key: str | None = None) -> list[dict]:
     details = []
     for code in codes:
         code_type = code.get("codeType") or "KCS"
@@ -505,7 +612,7 @@ def _standard_details(codes: list[dict], per_code_chars: int) -> list[dict]:
         if not code_no:
             continue
         try:
-            detail = _kcsc_client().get_code_detail(code_type, code_no)
+            detail = _kcsc_client(api_key).get_code_detail(code_type, code_no)
         except Exception as exc:
             details.append({
                 "code": _code_label(code),
@@ -527,14 +634,19 @@ def _build_review_package(
     max_codes: int = 6,
     include_standard_details: bool = True,
     per_code_chars: int = 1800,
+    api_key: str | None = None,
 ) -> dict:
     review_inputs = []
     for sheet in sheets:
         sheet_name = _sheet_label(sheet)
         numbered_text = _numbered_rows_text(sheet)
         source_text = _section_text(sheet, max_chars=4000)
-        recommended_codes = _recommend_codes_locally(numbered_text or source_text, limit=max_codes)
-        standards = _standard_details(recommended_codes, per_code_chars) if include_standard_details else []
+        recommended_codes = _recommend_codes_locally(numbered_text or source_text, limit=max_codes, api_key=api_key)
+        standards = (
+            _standard_details(recommended_codes, per_code_chars, api_key=api_key)
+            if include_standard_details
+            else []
+        )
         progress = _sheet_progress_summary(sheet, recommended_codes, standards)
         review_inputs.append({
             "sheet": sheet_name,
@@ -717,6 +829,10 @@ async def read_resource(uri) -> str:
 
 @server.list_tools()
 async def list_tools() -> list[types.Tool]:
+    api_key_property = {
+        "type": "string",
+        "description": "Optional KCSC API key for this request. If omitted, the server uses the session-stored key, request header, or server environment variable.",
+    }
     sheet_names_property = {
         "type": "array",
         "items": {"type": "string"},
@@ -736,6 +852,27 @@ async def list_tools() -> list[types.Tool]:
     }
 
     return [
+        types.Tool(
+            name="get_kcsc_api_key_status",
+            description="Check whether a KCSC API key is already configured for this MCP session.",
+            inputSchema={"type": "object", "properties": {}, "required": []},
+        ),
+        types.Tool(
+            name="set_kcsc_api_key",
+            description="Store a KCSC API key for the current MCP session so later tools can reuse it.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "api_key": {"type": "string", "description": "Your KCSC API key"},
+                },
+                "required": ["api_key"],
+            },
+        ),
+        types.Tool(
+            name="clear_kcsc_api_key",
+            description="Clear the KCSC API key stored for the current MCP session.",
+            inputSchema={"type": "object", "properties": {}, "required": []},
+        ),
         types.Tool(
             name="parse_excel_sheets",
             description="Parse Excel/PDF into sheet/page text. No LLM is called.",
@@ -760,6 +897,7 @@ async def list_tools() -> list[types.Tool]:
                     "sheet_names": sheet_names_property,
                     "max_codes": max_codes_property,
                     "include_standard_details": include_standard_details_property,
+                    "api_key": api_key_property,
                     "per_code_chars": {
                         "type": "integer",
                         "description": "Maximum standard text characters per code.",
@@ -781,6 +919,7 @@ async def list_tools() -> list[types.Tool]:
                     "sheet_name": {"type": "string", "description": "Display sheet name", "default": "시트"},
                     "max_codes": max_codes_property,
                     "include_standard_details": include_standard_details_property,
+                    "api_key": api_key_property,
                     "per_code_chars": {
                         "type": "integer",
                         "description": "Maximum standard text characters per code.",
@@ -795,7 +934,7 @@ async def list_tools() -> list[types.Tool]:
         types.Tool(
             name="kcsc_get_code_list",
             description="Return KCSC code list. No LLM is called.",
-            inputSchema={"type": "object", "properties": {}, "required": []},
+            inputSchema={"type": "object", "properties": {"api_key": api_key_property}, "required": []},
         ),
         types.Tool(
             name="kcsc_get_code_detail",
@@ -803,6 +942,7 @@ async def list_tools() -> list[types.Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
+                    "api_key": api_key_property,
                     "code_type": {"type": "string", "description": "KDS or KCS", "enum": ["KDS", "KCS"]},
                     "code_no": {"type": "string", "description": "Code number, e.g. 14 20 10 or 142010"},
                 },
@@ -815,6 +955,38 @@ async def list_tools() -> list[types.Tool]:
 @server.call_tool()
 async def call_tool(name: str, arguments: dict | None) -> list[types.TextContent]:
     arguments = arguments or {}
+
+    if name == "get_kcsc_api_key_status":
+        return _json_text(_kcsc_auth_status())
+
+    if name == "set_kcsc_api_key":
+        session_id = _current_session_id()
+        if not session_id:
+            raise ValueError("No MCP session ID is available for this request.")
+        api_key = str(arguments["api_key"]).strip()
+        if not api_key:
+            raise ValueError("api_key cannot be empty.")
+        _session_api_keys[session_id] = api_key
+        return _json_text({
+            "ok": True,
+            "scope": "session",
+            "session_id": session_id,
+            "api_key_masked": _mask_api_key(api_key),
+            "message": "KCSC API key stored for this MCP session.",
+        })
+
+    if name == "clear_kcsc_api_key":
+        session_id = _current_session_id()
+        removed = False
+        if session_id and session_id in _session_api_keys:
+            del _session_api_keys[session_id]
+            removed = True
+        return _json_text({
+            "ok": True,
+            "scope": "session",
+            "session_id": session_id,
+            "removed": removed,
+        })
 
     if name == "parse_excel_sheets":
         sheets = _parse_file(arguments["file_path"])
@@ -845,6 +1017,7 @@ async def call_tool(name: str, arguments: dict | None) -> list[types.TextContent
             max_codes=int(arguments.get("max_codes", 6)),
             include_standard_details=arguments.get("include_standard_details", True),
             per_code_chars=int(arguments.get("per_code_chars", 1800)),
+            api_key=_resolve_kcsc_api_key(arguments),
         )
         return _json_text(package)
 
@@ -857,14 +1030,21 @@ async def call_tool(name: str, arguments: dict | None) -> list[types.TextContent
             max_codes=int(arguments.get("max_codes", 6)),
             include_standard_details=arguments.get("include_standard_details", True),
             per_code_chars=int(arguments.get("per_code_chars", 1800)),
+            api_key=_resolve_kcsc_api_key(arguments),
         )
         return _json_text(package)
 
     if name == "kcsc_get_code_list":
-        return _json_text({"external_llm_called": False, "codes": _kcsc_client().get_code_list()})
+        return _json_text({
+            "external_llm_called": False,
+            "codes": _kcsc_client(_resolve_kcsc_api_key(arguments)).get_code_list(),
+        })
 
     if name == "kcsc_get_code_detail":
-        detail = _kcsc_client().get_code_detail(arguments["code_type"], arguments["code_no"])
+        detail = _kcsc_client(_resolve_kcsc_api_key(arguments)).get_code_detail(
+            arguments["code_type"],
+            arguments["code_no"],
+        )
         return _json_text({"external_llm_called": False, "detail": detail})
 
     raise ValueError(f"Unknown tool: {name}")
