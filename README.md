@@ -19,7 +19,7 @@ Claude의 커스텀 커넥터에 아래처럼 추가합니다.
 예시:
 
 ```text
-https://kdh-standard-mcp.onrender.com/mcp?oc=honggildong
+https://kdh-standard-mcp.onrender.com/mcp?oc=my-api-key-1231245
 ```
 
 `YOUR_KCSC_API_KEY` 부분에는 본인이 발급받은 KCSC API 키를 넣으면 됩니다.
