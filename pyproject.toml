@@ -3,7 +3,7 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "kcsc-standard-mcp"
+name = "kdh-standard-mcp"
 version = "0.1.0"
 description = "MCP server for reviewing Korean construction calculation documents against KCSC/KDS/KCS standards."
 readme = "README.md"
@@ -22,7 +22,7 @@ dependencies = [
 ]
 
 [project.scripts]
-kcsc-standard-mcp = "standard_checker.mcp_server.mcp_server:cli"
+kdh-standard-mcp = "standard_checker.mcp_server.mcp_server:cli"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

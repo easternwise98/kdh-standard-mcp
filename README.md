@@ -1,22 +1,20 @@
 # KCSC Standard MCP
 
-건설 구조계산서 검토용 원격 MCP 서버입니다.
+건설 구조계산서 검토를 위한 Claude용 MCP 서버입니다.
 
 이 서버로 할 수 있는 일:
 
-- 엑셀 / PDF 구조계산서 파싱
-- 시트별 검토 패키지 생성
-- KCSC / KDS / KCS 기준 조회
-- Claude가 바로 쓸 수 있는 보고서용 검토 컨텍스트 제공
+- 엑셀 / PDF 구조계산서 읽기
+- 적용 KDS / KCS / KCSC 기준 찾기
+- 시트별 검토 포인트 정리
+- 구조계산서 검토 보고서 초안 작성 보조
 
-## Claude에서 쓰는 방법
+## Claude에서 사용하는 방법
 
-Claude.ai 커스텀 커넥터에 아래처럼 넣으면 됩니다.
+Claude의 커스텀 커넥터에 아래처럼 추가합니다.
 
-- 이름: `kcsc-standard-mcp`
+- 이름: `kdh-standard-mcp`
 - URL: `https://your-service.onrender.com/mcp?oc=YOUR_KCSC_API_KEY`
-
-즉, **자기 KCSC API 키를 URL의 `oc` 값으로 넣어서 연결**합니다.
 
 예시:
 
@@ -24,105 +22,55 @@ Claude.ai 커스텀 커넥터에 아래처럼 넣으면 됩니다.
 https://your-service.onrender.com/mcp?oc=honggildong
 ```
 
-연결 후 Claude에서 바로 물어보면 됩니다.
+`YOUR_KCSC_API_KEY` 부분에는 본인이 발급받은 KCSC API 키를 넣으면 됩니다.
+
+## 연결 후 이렇게 쓰면 됩니다
+
+예시 질문:
 
 - "이 PDF 구조계산서 검토해줘"
 - "적용 기준부터 정리해줘"
-- "보고서 형식으로 결과 써줘"
+- "오류 가능성 있는 부분 먼저 찾아줘"
+- "보고서 형식으로 정리해줘"
+- "풍하중 기준 적용이 맞는지 봐줘"
+- "누락된 계산 결과가 있는지 찾아줘"
 
-## 지원하는 API 키 방식
+## 이 서버가 Claude에 주는 기능
 
-우선순위는 아래와 같습니다.
+- 계산서 텍스트 추출
+- 시트별 검토 패키지 생성
+- KDS / KCS 기준 조회
+- 상세 보고서용 프롬프트 제공
 
-1. MCP URL 쿼리 `?oc=...`
-2. tool 입력의 `api_key`
-3. 요청 헤더 `X-KCSC-API-Key`
-4. 세션 저장 `set_kcsc_api_key`
-5. 서버 환경변수 `KCSC_API_KEY`
+즉, Claude가 계산서 내용을 읽고 기준을 대조해서 더 구조적으로 답변할 수 있게 도와줍니다.
 
-Claude.ai에서는 **`?oc=` 방식이 가장 간단**합니다.
+## 추천 사용 흐름
 
-## 주요 도구
+1. 계산서 파일을 Claude에 올립니다.
+2. "적용 기준부터 정리해줘"처럼 먼저 전체 구조를 보게 합니다.
+3. 그다음 "검토 보고서 형식으로 써줘"라고 요청합니다.
+4. 필요하면 특정 항목만 다시 확인합니다.
 
-- `parse_excel_sheets`
-- `review_excel_by_sheet`
-- `analyze_single_sheet`
-- `kcsc_get_code_list`
-- `kcsc_get_code_detail`
-- `standardchecker_detailed_report` Prompt
+예:
 
-## Render 무료 배포
+- "활하중 적용값이 맞는지 다시 봐줘"
+- "앵커볼트 규격 불일치가 있는지 확인해줘"
+- "수정·보완 필요 사항만 표로 정리해줘"
 
-### 1. GitHub에 push
+## 자주 쓰는 요청 예시
 
-이 저장소를 GitHub에 올립니다.
+- "계산서 전체를 기준 검토 관점으로 요약해줘"
+- "적합 / 검토필요 / 부적합으로 나눠줘"
+- "페이지 근거를 붙여서 써줘"
+- "최종 검토의견만 따로 정리해줘"
+- "보고서 형식 표로 만들어줘"
 
-### 2. Render에서 Web Service 생성
+## 필요한 것
 
-`New +` → `Web Service`
-
-### 3. 아래 값 입력
-
-- Runtime: `Python 3`
-- Branch: `main`
-- Root Directory: 비움
-- Build Command: `pip install .`
-- Start Command: `kcsc-standard-mcp`
-- Instance Type: `Free`
-
-### 4. 환경변수 추가
-
-- `MCP_SERVER_PATH` = `/mcp`
-
-공용 키 서버로 운영할 때만 아래도 추가:
-
-- `KCSC_API_KEY` = 운영자 키
-
-### 5. 배포 후 확인
-
-예를 들어 Render 주소가 아래라면:
-
-```text
-https://kdh-standard-mcp.onrender.com
-```
-
-확인 주소:
-
-```text
-https://kdh-standard-mcp.onrender.com/healthz
-https://kdh-standard-mcp.onrender.com/mcp
-```
-
-Claude에는 `/mcp` 주소를 넣습니다.
-
-사용자별 키 방식이면 최종 URL은 이런 형태입니다.
-
-```text
-https://kdh-standard-mcp.onrender.com/mcp?oc=YOUR_KCSC_API_KEY
-```
-
-## 로컬 실행
-
-```powershell
-py -3.11 -m venv .venv
-.venv\Scripts\Activate.ps1
-pip install -e .
-$env:MCP_SERVER_PATH="/mcp"
-kcsc-standard-mcp
-```
-
-공용 키로 테스트할 때만:
-
-```powershell
-$env:KCSC_API_KEY="YOUR_KCSC_API_KEY"
-```
+- Claude
+- KCSC API 키
+- 커넥터 URL
 
 ## 예시 설정 파일
 
 [claude_desktop_config.example.json](/c:/Users/user/PycharmProjects/kdh-standard-mcp/claude_desktop_config.example.json:1)
-
-## 파일
-
-- [pyproject.toml](/c:/Users/user/PycharmProjects/kdh-standard-mcp/pyproject.toml:1)
-- [render.yaml](/c:/Users/user/PycharmProjects/kdh-standard-mcp/render.yaml:1)
-- [src/standard_checker/mcp_server/mcp_server.py](/c:/Users/user/PycharmProjects/kdh-standard-mcp/src/standard_checker/mcp_server/mcp_server.py:1)
