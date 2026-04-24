@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kcsc-standard-mcp"
+version = "0.1.0"
+description = "MCP server for reviewing Korean construction calculation documents against KCSC/KDS/KCS standards."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+  { name = "KDHDev" }
+]
+dependencies = [
+  "mcp",
+  "python-dotenv",
+  "requests",
+  "openpyxl",
+  "pdfplumber",
+]
+
+[project.scripts]
+kcsc-standard-mcp = "standard_checker.mcp_server.mcp_server:cli"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
