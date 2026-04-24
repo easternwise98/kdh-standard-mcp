@@ -14,12 +14,12 @@
 Claude의 커스텀 커넥터에 아래처럼 추가합니다.
 
 - 이름: `kdh-standard-mcp`
-- URL: `https://your-service.onrender.com/mcp?oc=YOUR_KCSC_API_KEY`
+- URL: `https://kdh-standard-mcp.onrender.com/mcp?oc=YOUR_KCSC_API_KEY`
 
 예시:
 
 ```text
-https://your-service.onrender.com/mcp?oc=honggildong
+https://kdh-standard-mcp.onrender.com/mcp?oc=honggildong
 ```
 
 `YOUR_KCSC_API_KEY` 부분에는 본인이 발급받은 KCSC API 키를 넣으면 됩니다.
